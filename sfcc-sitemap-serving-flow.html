@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serving SFCC sitemaps – routing, name resolution, and the headless fix</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --ink: #e6e9ef;
+    --dim: #99a1b3; --line: #2a2f3a; --accent: #7aa2f7; --accent2: #9ece6a;
+    --warn: #e0af68; --warnbg: #2a2415; --warnline: #5c4a1e;
+    --mono: ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 24px 96px; }
+  .prose { max-width: 860px; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 8px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .sub { color: var(--dim); font-size: 13px; }
+  .sub code { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--dim); margin: 40px 0 14px; font-weight: 600; }
+  code { font-family: var(--mono); font-size: 0.88em; background: var(--panel2);
+    padding: 1px 5px; border-radius: 4px; color: #c0caf5; }
+  p { margin: 0 0 12px; }
+  .lead { color: var(--dim); margin: 20px 0 8px; }
+  ol, ul { margin: 0 0 12px; padding-left: 22px; }
+  li { margin: 0 0 8px; }
+  li b { color: var(--ink); }
+
+  figure { margin: 28px 0 10px; max-width: 1140px; }
+  figure svg { display: block; width: 100%; height: auto; background: #f8fafc;
+    border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.35); }
+  figcaption { color: var(--dim); font-size: 12px; margin-top: 10px; }
+
+  table.matrix { border-collapse: collapse; margin: 10px 0 14px; font-size: 13px; max-width: 860px; }
+  table.matrix th, table.matrix td { border: 1px solid var(--line); padding: 7px 12px; text-align: left; vertical-align: top; }
+  table.matrix th { color: var(--dim); font-weight: 600; background: var(--panel2); }
+  .ok-mark { color: var(--accent2); font-weight: 700; }
+  .err-mark { color: #f7768e; font-weight: 700; }
+
+  .callout { background: var(--warnbg); border: 1px solid var(--warnline);
+    border-radius: 8px; padding: 14px 18px; margin: 16px 0; font-size: 14px; color: #f0d9a8;
+    max-width: 860px; }
+  .callout b { color: var(--warn); }
+
+  pre { background: #0b0d11; border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px;
+    line-height: 1.55; color: #c0caf5; max-width: 860px; }
+  pre .c { color: var(--dim); }
+  pre .ok { color: var(--accent2); }
+  pre .err { color: #f7768e; }
+  pre .kw { color: #bb9af7; }
+
+  details { max-width: 860px; margin: 14px 0; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--panel); }
+  details > summary { cursor: pointer; padding: 12px 16px; color: var(--ink);
+    font-weight: 600; font-size: 14px; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "\25B8"; color: var(--dim); margin-right: 8px; display: inline-block; }
+  details[open] > summary::before { content: "\25BE"; }
+  details[open] > summary { border-bottom: 1px solid var(--line); }
+  details pre { margin: 0; border: none; border-radius: 0 0 8px 8px; }
+
+  .foot { color: var(--dim); font-size: 12px; margin-top: 40px; border-top: 1px solid var(--line);
+    padding-top: 16px; max-width: 860px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="prose">
+    <h1>Serving SFCC sitemaps</h1>
+    <div class="sub">The full path a sitemap request takes &ndash; routed behind a reverse proxy, resolved on a custom alias, and served (or not) on a <b>fully headless</b> storefront &ndash; and the <code>Module "server" not found</code> trap that headless projects hit with <code>plugin_sitemap</code>. Example values (<code>www.site.com</code>, <code>zzzz-001&hellip;</code>, <code>Sites-RefArch-Site</code>) are placeholders; swap for your storefront domain, instance host, and site ID.</div>
+  </header>
+
+  <p class="lead prose">A headless storefront serves everything from PWA Kit on Managed Runtime (MRT), but the SEO sitemap is still generated and served by the classic B2C storefront on the ecom instance. A reverse proxy sends the handful of sitemap URLs to ecom and leaves everything else on MRT. Two things then have to line up: the proxy must forward the request <em>transparently</em> (same <code>Host</code>, same path) so ecom resolves the clean URL to the right file, and the <code>SiteMap-Google</code> controller must actually <em>load</em> &ndash; which is where a fully headless project trips over <code>plugin_sitemap</code>'s dependency on the SFRA <code>server</code> module.</p>
+
+  <figure>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1230 1600" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" role="img" aria-label="Flowchart: a reverse proxy routes sitemap paths to the SFCC ecom origin with the Host header preserved while other traffic goes to PWA Kit MRT. ecom maps the clean sitemap URL to the SiteMap-Google controller; the name parameter carries the host prefix only when the request Host is not the storefront alias. The stock plugin_sitemap SFRA controller loads the server module and throws Module server not found with a 500 on a fully headless storefront, while a dependency-free standalone controller loads and runs the SendGoogleSiteMap pipelet to return 200 or 404.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+    <style>
+      text{fill:#0f172a;}
+      .b-title{font-size:15px;font-weight:600;}
+      .b-sub{font-size:12.5px;}
+      .mono{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;}
+      .lbl{font-size:12px;font-weight:700;fill:#475569;}
+      .edge{stroke:#475569;stroke-width:2;fill:none;}
+      .dotted{stroke:#f59e0b;stroke-width:1.6;stroke-dasharray:2 4;fill:none;}
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1230" height="1600" fill="#f8fafc" stroke="#e2e8f0"/>
+
+  <!-- title -->
+  <text x="560" y="44" text-anchor="middle" font-size="21" font-weight="700">Serving SFCC sitemaps: routing, name resolution, and the headless fix</text>
+  <text x="560" y="67" text-anchor="middle" font-size="13" fill="#475569">How /sitemap_index.xml reaches SiteMap-Google &#183; behind a proxy, on a custom alias, and on a fully headless storefront</text>
+
+  <!-- legend -->
+  <g transform="translate(-250,0)">
+  <rect x="1130" y="92" width="330" height="322" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="1150" y="120" class="b-title">Legend</text>
+  <rect x="1150" y="133" width="20" height="14" rx="3" fill="#eef2f7" stroke="#64748b"/><text x="1180" y="144" class="b-sub" fill="#334155">Client</text>
+  <rect x="1150" y="163" width="20" height="14" rx="3" fill="#e0f2fe" stroke="#0284c7"/><text x="1180" y="174" class="b-sub" fill="#334155">Reverse proxy / edge</text>
+  <rect x="1150" y="193" width="20" height="14" rx="3" fill="#fef3c7" stroke="#d97706"/><text x="1180" y="204" class="b-sub" fill="#334155">Routing / branch decision</text>
+  <rect x="1150" y="223" width="20" height="14" rx="3" fill="#ede9fe" stroke="#7c3aed"/><text x="1180" y="234" class="b-sub" fill="#334155">PWA Kit MRT (headless)</text>
+  <rect x="1150" y="253" width="20" height="14" rx="3" fill="#d1fae5" stroke="#059669"/><text x="1180" y="264" class="b-sub" fill="#334155">B2C ecom / SFRA</text>
+  <rect x="1150" y="283" width="20" height="14" rx="3" fill="#dcfce7" stroke="#16a34a"/><text x="1180" y="294" class="b-sub" fill="#334155">200 success</text>
+  <rect x="1150" y="313" width="20" height="14" rx="3" fill="#fee2e2" stroke="#dc2626"/><text x="1180" y="324" class="b-sub" fill="#334155">404 not found</text>
+  <rect x="1150" y="343" width="20" height="14" rx="3" fill="#fecaca" stroke="#b91c1c"/><text x="1180" y="354" class="b-sub" fill="#334155">500 script error</text>
+  <line class="dotted" x1="1150" y1="380" x2="1170" y2="380"/><text x="1180" y="384" class="b-sub" fill="#334155">explanation / note</text>
+  </g>
+
+  <!-- ============ ROUTING ============ -->
+  <!-- client -->
+  <rect x="320" y="92" width="480" height="68" rx="12" fill="#eef2f7" stroke="#64748b" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="560" y="122" text-anchor="middle" class="b-title">Client &#183; Googlebot / crawler / browser</text>
+  <text x="560" y="143" text-anchor="middle" class="b-sub mono" fill="#334155">GET https://www.site.com/&lt;path&gt;</text>
+  <line class="edge" x1="560" y1="160" x2="560" y2="190" marker-end="url(#arrow)"/>
+
+  <!-- reverse proxy -->
+  <rect x="290" y="190" width="540" height="78" rx="12" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="560" y="219" text-anchor="middle" class="b-title" fill="#0c4a6e">Reverse proxy / eCDN</text>
+  <text x="560" y="241" text-anchor="middle" class="b-sub" fill="#0c4a6e">In front of MRT and ecom &#8211; selects the origin by request path</text>
+  <line class="edge" x1="560" y1="268" x2="560" y2="296" marker-end="url(#arrow)"/>
+
+  <!-- routing decision -->
+  <polygon points="560,296 720,376 560,456 400,376" fill="#fef3c7" stroke="#d97706" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="560" y="356" text-anchor="middle" class="b-title" fill="#78350f">Sitemap path?</text>
+  <text x="560" y="378" text-anchor="middle" class="mono" font-size="11" fill="#78350f">/sitemap_index.xml</text>
+  <text x="560" y="394" text-anchor="middle" class="mono" font-size="11" fill="#78350f">/sitemap_&lt;N&gt;.xml</text>
+  <text x="560" y="410" text-anchor="middle" class="mono" font-size="11" fill="#78350f">/sitemap-&#8230;-custom.xml</text>
+
+  <!-- NO branch -->
+  <line class="edge" x1="400" y1="376" x2="270" y2="376" marker-end="url(#arrow)"/>
+  <text x="335" y="366" text-anchor="middle" class="lbl">no</text>
+  <rect x="40" y="338" width="230" height="76" rx="12" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="155" y="368" text-anchor="middle" class="b-title" fill="#4c1d95">PWA Kit MRT</text>
+  <text x="155" y="389" text-anchor="middle" class="b-sub" fill="#4c1d95">headless SSR (Managed Runtime)</text>
+  <line class="edge" x1="155" y1="414" x2="155" y2="470" marker-end="url(#arrow)"/>
+  <rect x="40" y="470" width="230" height="72" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="155" y="500" text-anchor="middle" class="b-title" fill="#4c1d95">Storefront HTML</text>
+  <text x="155" y="520" text-anchor="middle" class="b-sub" fill="#4c1d95">rendered by MRT &#183; non-sitemap</text>
+  <path class="edge" d="M155,542 V556 H30 V1544 H470" marker-end="url(#arrow)"/>
+
+  <!-- YES branch -->
+  <line class="edge" x1="560" y1="456" x2="560" y2="486" marker-end="url(#arrow)"/>
+  <text x="576" y="476" class="lbl">yes</text>
+
+  <!-- ============ ECOM ORIGIN (hero) ============ -->
+  <rect x="290" y="486" width="540" height="132" rx="12" fill="#d1fae5" stroke="#059669" stroke-width="2.5" filter="url(#shadow)"/>
+  <text x="560" y="514" text-anchor="middle" class="b-title" fill="#064e3b">Route to the ecom origin &#8211; Host header preserved</text>
+  <text x="312" y="544" class="mono" font-size="11.5" fill="#064e3b">Host:  www.site.com        (passed through, unchanged)</text>
+  <text x="312" y="566" class="mono" font-size="11.5" fill="#064e3b">Path:  /sitemap_index.xml  (unchanged)</text>
+  <line x1="312" y1="584" x2="808" y2="584" stroke="#059669" stroke-opacity="0.35" stroke-width="1"/>
+  <text x="312" y="605" class="b-sub" fill="#065f46">Proxy selects the origin (ecom, not MRT) and rewrites nothing.</text>
+  <line class="edge" x1="560" y1="618" x2="560" y2="646" marker-end="url(#arrow)"/>
+
+  <!-- ============ SEO MAPPING ============ -->
+  <rect x="290" y="646" width="540" height="128" rx="12" fill="#ecfdf5" stroke="#059669" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="560" y="674" text-anchor="middle" class="b-title" fill="#064e3b">ecom maps the SEO URL to a controller</text>
+  <text x="312" y="702" class="mono" font-size="11.5" fill="#064e3b">/sitemap_index.xml   &#8594;</text>
+  <text x="312" y="724" class="mono" font-size="11.5" fill="#064e3b">SiteMap-Google?name=sitemap_index.xml</text>
+  <text x="312" y="744" class="b-sub" fill="#065f46">On the alias host the <tspan class="mono">name</tspan> is bare &#8211; just the filename,</text>
+  <text x="312" y="760" class="b-sub" fill="#065f46">with no host prefix; the Host supplies the host context.</text>
+
+  <!-- name-resolution matrix (side panel) -->
+  <g transform="translate(-250,0)">
+  <rect x="1130" y="486" width="330" height="300" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 4" filter="url(#shadow)"/>
+  <text x="1150" y="514" class="b-title" fill="#78350f">How <tspan class="mono">name</tspan> resolves</text>
+  <text x="1150" y="537" class="b-sub" fill="#78350f">file = (effective host) + <tspan class="mono">name</tspan>.</text>
+  <text x="1150" y="555" class="b-sub" fill="#78350f">The <tspan class="mono">name</tspan> carries the host prefix</text>
+  <text x="1150" y="573" class="b-sub" fill="#78350f">iff the request Host isn't the alias:</text>
+  <text x="1150" y="600" class="mono" font-size="10.5" fill="#334155">instance host + name=host%2ffile</text>
+  <text x="1150" y="616" font-size="11" fill="#166534">&#10003; 200</text>
+  <text x="1150" y="640" class="mono" font-size="10.5" fill="#334155">alias host&#160;&#160;&#160; + name=file</text>
+  <text x="1150" y="656" font-size="11" fill="#166534">&#10003; 200&#160;&#160; (the clean-URL path)</text>
+  <text x="1150" y="680" class="mono" font-size="10.5" fill="#334155">alias host&#160;&#160;&#160; + name=host%2ffile</text>
+  <text x="1150" y="696" font-size="11" fill="#b91c1c">&#10007; no matching file</text>
+  <line x1="1150" y1="712" x2="1440" y2="712" stroke="#f59e0b" stroke-opacity="0.4" stroke-width="1"/>
+  <text x="1150" y="732" class="b-sub" font-size="11.5" fill="#78350f">Rewrite Host to the instance host</text>
+  <text x="1150" y="750" class="b-sub" font-size="11.5" fill="#78350f">(not the alias): nothing is prepended,</text>
+  <text x="1150" y="768" class="b-sub" font-size="11.5" fill="#78350f">so the bare <tspan class="mono">name</tspan> misses &#8594; 404.</text>
+  </g>
+
+  <!-- hint connector: name-resolution matrix -> the pipelet that resolves name -->
+  <path class="dotted" d="M1160,786 V1102 H1090"/>
+
+  <line class="edge" x1="560" y1="774" x2="560" y2="804" marker-end="url(#arrow)"/>
+
+  <!-- ============ CONTROLLER FLAVOR DECISION ============ -->
+  <polygon points="560,804 704,864 560,924 416,864" fill="#fef3c7" stroke="#d97706" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="560" y="858" text-anchor="middle" class="b-title" fill="#78350f">Which SiteMap.js</text>
+  <text x="560" y="878" text-anchor="middle" class="b-title" fill="#78350f">is deployed?</text>
+
+  <!-- LEFT: stock SFRA controller -> failure -->
+  <path class="edge" d="M416,864 H265 V912" marker-end="url(#arrow)"/>
+  <text x="360" y="854" text-anchor="middle" class="lbl">stock SFRA</text>
+  <rect x="60" y="912" width="410" height="104" rx="12" fill="#ecfdf5" stroke="#059669" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="265" y="940" text-anchor="middle" class="b-title" fill="#064e3b">plugin_sitemap SiteMap.js (stock SFRA)</text>
+  <text x="80" y="967" class="mono" font-size="11" fill="#b91c1c">var server = require('server');</text>
+  <text x="80" y="988" class="b-sub" fill="#065f46">SFRA registration pattern &#8211; loads the</text>
+  <text x="80" y="1006" class="b-sub" fill="#065f46"><tspan class="mono">server</tspan> module at the top of the file.</text>
+  <line class="edge" x1="265" y1="1016" x2="265" y2="1052" marker-end="url(#arrow)"/>
+
+  <rect x="60" y="1052" width="410" height="128" rx="12" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+  <text x="265" y="1082" text-anchor="middle" class="b-title" fill="#7f1d1d">Module &quot;server&quot; not found &#8594; 500</text>
+  <text x="80" y="1108" class="b-sub" fill="#7f1d1d">A fully headless storefront has</text>
+  <text x="80" y="1126" class="b-sub" fill="#7f1d1d">no <tspan class="mono">server</tspan> module to import.</text>
+  <text x="80" y="1150" class="b-sub" font-size="11" fill="#7f1d1d"><tspan class="mono">server</tspan> is a cousin of <tspan class="mono">app_storefront_base</tspan></text>
+  <text x="80" y="1166" class="b-sub" font-size="11" fill="#7f1d1d">(a separate <tspan class="mono">modules</tspan> upload, not inside it).</text>
+
+  <!-- Error-Start cascade note -->
+  <line class="dotted" x1="265" y1="1180" x2="265" y2="1208"/>
+  <rect x="60" y="1208" width="410" height="116" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 4" filter="url(#shadow)"/>
+  <text x="80" y="1234" class="b-title" fill="#78350f">Red herring: the Error-Start cascade</text>
+  <text x="80" y="1256" class="b-sub" font-size="11.5" fill="#78350f">The unhandled error runs <tspan class="mono">Error-Start</tspan>,</text>
+  <text x="80" y="1274" class="b-sub" font-size="11.5" fill="#78350f">whose <tspan class="mono">Error.js</tspan> also loads <tspan class="mono">server</tspan> &#8211; a</text>
+  <text x="80" y="1292" class="b-sub" font-size="11.5" fill="#78350f">second <tspan class="mono">server</tspan> error. The real fault is</text>
+  <text x="80" y="1310" class="b-sub" font-size="11.5" fill="#78350f">upstream, not in <tspan class="mono">Error.js</tspan>.</text>
+
+  <!-- 500 joins the response collector on its right side -->
+  <path class="edge" d="M470,1116 H520 V1490"/>
+
+  <!-- RIGHT: dependency-free fix -> serve -->
+  <path class="edge" d="M704,864 H870 V912" marker-end="url(#arrow)"/>
+  <text x="798" y="854" text-anchor="middle" class="lbl">dependency-free (fix)</text>
+  <rect x="650" y="912" width="440" height="104" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+  <text x="870" y="940" text-anchor="middle" class="b-title" fill="#14532d">Dependency-free SiteMap.js (the fix)</text>
+  <text x="672" y="967" class="mono" font-size="11" fill="#14532d">exports.Google = endpoint;  endpoint.public = true;</text>
+  <text x="672" y="988" class="b-sub" fill="#166534">No <tspan class="mono">require('server')</tspan> &#8211; a standalone</text>
+  <text x="672" y="1006" class="b-sub" fill="#166534">controller that loads on headless.</text>
+  <line class="edge" x1="870" y1="1016" x2="870" y2="1052" marker-end="url(#arrow)"/>
+
+  <rect x="650" y="1052" width="440" height="100" rx="12" fill="#ecfdf5" stroke="#059669" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="870" y="1080" text-anchor="middle" class="b-title" fill="#064e3b">SendGoogleSiteMap pipelet</text>
+  <text x="672" y="1108" class="mono" font-size="11" fill="#065f46">FileName = name &#8594; reads stored sitemap file</text>
+  <text x="672" y="1132" class="b-sub" font-size="11.5" fill="#065f46"><tspan class="mono">name</tspan> resolves per the matrix &#8599;</text>
+  <line class="edge" x1="870" y1="1152" x2="870" y2="1180"/>
+
+  <!-- outcome split -->
+  <text x="700" y="1200" text-anchor="middle" class="lbl" fill="#166534">file found</text>
+  <text x="1042" y="1200" text-anchor="middle" class="lbl" fill="#b91c1c">no file</text>
+  <path class="edge" d="M870,1180 H750 V1230" marker-end="url(#arrow)"/>
+  <path class="edge" d="M870,1180 H990 V1230" marker-end="url(#arrow)"/>
+
+  <rect x="650" y="1230" width="200" height="86" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="750" y="1260" text-anchor="middle" class="b-title" fill="#14532d">200 OK</text>
+  <text x="750" y="1281" text-anchor="middle" class="b-sub" fill="#14532d">streams stored</text>
+  <text x="750" y="1298" text-anchor="middle" class="b-sub" fill="#14532d">sitemap XML</text>
+
+  <rect x="890" y="1230" width="200" height="86" rx="12" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="990" y="1260" text-anchor="middle" class="b-title" fill="#7f1d1d">404 Not Found</text>
+  <text x="990" y="1281" text-anchor="middle" class="b-sub" fill="#7f1d1d">no matching file</text>
+  <text x="990" y="1298" text-anchor="middle" class="b-sub" fill="#7f1d1d">(PIPELET_ERROR)</text>
+
+  <!-- ============ RESPONSE BUS ============ -->
+  <path class="edge" d="M750,1316 V1490"/>
+  <path class="edge" d="M990,1316 V1490"/>
+  <path class="edge" d="M520,1490 H990"/>
+  <path class="edge" d="M630,1490 V1520" marker-end="url(#arrow)"/>
+  <rect x="470" y="1520" width="320" height="48" rx="24" fill="#eef2f7" stroke="#64748b" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="630" y="1549" text-anchor="middle" class="b-sub" font-weight="600">Response returned to client</text>
+</svg>
+    <figcaption class="prose">Full request flow for sitemaps: routing, SEO-URL resolution, the controller-load fork (stock SFRA vs. dependency-free), and the served response. Source diagram: <code>sfcc-sitemap-serving-flow.svg</code>.</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h2>How a request is routed</h2>
+    <ol>
+      <li>A crawler or browser requests <code>https://www.site.com/&lt;path&gt;</code> &ndash; e.g. <code>/sitemap_index.xml</code>.</li>
+      <li>The reverse proxy &ndash; an <b>eCDN</b> rule or edge reverse proxy in front of MRT &ndash; inspects the path. Anything that isn't a sitemap goes to <b>PWA Kit MRT</b> for headless SSR.</li>
+      <li>If the path is a sitemap file (<code>/sitemap_index.xml</code>, <code>/sitemap_&lt;N&gt;.xml</code>, or a custom sitemap such as <code>/sitemap-&hellip;-custom.xml</code>), the proxy routes the request to the <b>B2C ecom origin</b> instead &ndash; <b>preserving the <code>Host</code> header</b> (<code>www.site.com</code>) and the path. It rewrites nothing; the backend sees the request exactly as a direct hit would.</li>
+      <li>ecom resolves the clean URL to a controller: on the alias host, <code>/sitemap_index.xml</code> maps to <code>SiteMap-Google</code> with the <b>bare</b> <code>name=sitemap_index.xml</code> &ndash; the request <code>Host</code> supplies the host context (see the next section). This <code>/sitemap_index.xml</code> mapping is hidden and automatic, provided by the platform rather than a route you configure.</li>
+      <li>The <code>SiteMap-Google</code> controller has to <b>load</b> before it can run. This is the fork the headless case exposes: the stock <code>plugin_sitemap</code> controller is an SFRA module that <code>require('server')</code>s at the top of the file. If the <code>server</code> module isn't present (a fully headless storefront), the load throws <code>Module "server" not found</code> and the request 500s. A dependency-free controller loads regardless.</li>
+      <li>Once loaded, the controller runs the <code>SendGoogleSiteMap</code> pipelet with <code>FileName = name</code>, which streams the stored sitemap file (<b>200</b>) or returns <b>404</b> when no file matches (<code>PIPELET_ERROR</code>).</li>
+      <li>The response flows back through the proxy to the client.</li>
+    </ol>
+
+    <h2>How the <code>name</code> parameter resolves</h2>
+    <p>The stored file is keyed by <b>(effective host) + name</b>. The effective host comes from the request <code>Host</code> <em>when it is a configured storefront alias</em>; otherwise you have to encode the host into <code>name</code> yourself. So the <code>name</code> carries the host prefix <b>if and only if</b> the request <code>Host</code> isn't already that alias:</p>
+    <table class="matrix">
+      <thead><tr><th>Request <code>Host</code></th><th><code>name=</code></th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>instance host<br><code>zzzz-001&hellip;salesforce.com</code></td><td><code>www.site.com%2fsitemap_index.xml</code><br>(host-prefixed)</td><td><span class="ok-mark">&#10003;</span> 200</td></tr>
+        <tr><td>alias host<br><code>www.site.com</code></td><td><code>sitemap_index.xml</code><br>(bare)</td><td><span class="ok-mark">&#10003;</span> 200 &ndash; the clean-URL path</td></tr>
+        <tr><td>alias host<br><code>www.site.com</code></td><td><code>www.site.com%2fsitemap_index.xml</code><br>(host-prefixed)</td><td><span class="err-mark">&#10007;</span> no matching file</td></tr>
+      </tbody>
+    </table>
+    <p>This is why the proxy must leave <code>Host</code> alone. Routing the request to the ecom instance is correct; the subtlety is that the <code>Host</code> header must still carry the storefront alias, not the instance's own hostname. On the alias, the platform prepends the alias host to the <em>bare</em> name the clean URL produced, so it resolves to the generated file. Point <code>Host</code> at the instance's own hostname (not a configured alias) and nothing is prepended &ndash; the bare name is used as-is, matches no generated file, and returns <b>404</b>.</p>
+
+    <pre><span class="c"># Clean SEO URL on the storefront alias -&gt; ecom maps it to a BARE-name controller call:</span>
+GET https://www.site.com/sitemap_index.xml                          <span class="ok">-&gt; 200</span>
+  <span class="c">internally -&gt;</span> SiteMap-Google?name=sitemap_index.xml            <span class="ok">-&gt; 200</span>
+
+<span class="c"># Same file via the INSTANCE host: no alias context, so name must carry the host:</span>
+GET .../SiteMap-Google?name=www.site.com%2fsitemap_index.xml        <span class="ok">-&gt; 200</span>
+
+<span class="c"># Host-prefixed name on the ALIAS host double-counts the host -&gt; misses:</span>
+GET https://www.site.com/...SiteMap-Google?name=www.site.com%2fsitemap_index.xml  <span class="err">-&gt; no match</span>
+
+<span class="c"># On the instance's own host (not the alias) the clean URL yields a bare name -&gt; no match:</span>
+GET https://zzzz-001.dx.commercecloud.salesforce.com/sitemap_index.xml           <span class="err">-&gt; 404</span></pre>
+
+    <h2>The headless <code>server</code>-module trap</h2>
+    <p><code>plugin_sitemap</code> is an <b>SFRA</b> cartridge. Its <code>SiteMap.js</code> opens with <code>var server = require('server');</code> and registers the route the SFRA way. But the <code>server</code> module is <b>not part of <code>app_storefront_base</code></b> &ndash; it's a cousin, shipped separately in the SFRA <code>modules/</code> upload that sits alongside the cartridges. A <b>fully headless</b> storefront is the acute case: this <code>SiteMap.js</code> may be the <em>only</em> controller in the whole codebase, so the SFRA <code>server</code> framework was never needed and may not be present at all &ndash; and <code>require('server')</code> resolves to nothing.</p>
+    <p>When <code>server</code> can't be resolved, requiring it throws at controller <em>load</em> time, before any of your logic runs:</p>
+    <pre><span class="err">ScriptingException: Module "server" not found.</span>  (plugin_sitemap/cartridge/controllers/<span class="kw">SiteMap.js</span>#3)</pre>
+    <div class="callout"><b>The second <code>server</code> error is a red herring.</b> Any unhandled exception is routed to <code>Error-Start</code>. If the project's <code>Error.js</code> <em>also</em> does <code>require('server')</code>, then <code>Error-Start</code> throws the <em>same</em> <code>Module "server" not found</code> while trying to render the error page &ndash; so you see two <code>server</code> errors. The real fault is the original unhandled error upstream; fixing <code>Error.js</code> only lets that real message surface, it doesn't fix the cause.</div>
+
+    <h2>The fix: a dependency-free controller</h2>
+    <p>Don't add <code>server</code> just for this. The <code>server</code> module only provides SFRA middleware and layering (route chains, request/response helpers), none of which <code>SiteMap-Google</code> needs. Instead, <b>replace</b> (not add) <code>plugin_sitemap</code>'s <code>SiteMap.js</code> with a dependency-free, standalone controller that exports <code>Google</code> directly and drives the same <code>SendGoogleSiteMap</code> pipelet. With no <code>require('server')</code>, it loads on a fully headless code version.</p>
+    <details>
+      <summary>Full controller &ndash; <code>cartridge/controllers/SiteMap.js</code> (dependency-free)</summary>
+<pre><span class="c">// cartridge/controllers/SiteMap.js</span>
+<span class="c">/**
+ * Serves requests for search provider (Google, Yahoo) XML site maps. Reads a
+ * given site map and copies it into the request output stream.
+ */</span>
+function endpoint() {
+    var fileName = request.httpParameterMap.name.stringValue;
+    var siteMapResult = '500';
+    if (fileName) {
+        var SendGoogleSiteMapResult = new dw.system.Pipelet('SendGoogleSiteMap').execute({
+            FileName: fileName
+        });
+        if (SendGoogleSiteMapResult.result === PIPELET_ERROR) {
+            siteMapResult = '404';
+        } else {
+            siteMapResult = '200';
+        }
+    }
+    response.setStatus(siteMapResult);
+}
+endpoint.public = true;
+exports.Google = endpoint;</pre>
+    </details>
+    <div class="callout"><b>Convert at your own risk.</b> This is a first-party conversion of the SFRA controller, not a supported drop-in &ndash; deploy and test it in a sandbox before production. If you also want the platform error page to render on a headless code version, give <code>Error.js</code> the same dependency-free treatment; that's cosmetic and doesn't change root causes.</div>
+
+    <h2>Notes &amp; gotchas</h2>
+    <ul>
+      <li><b>File names.</b> The index is <code>sitemap_index.xml</code>; children are zero-indexed and may carry a type suffix (<code>sitemap_0.xml</code>, <code>sitemap_0-product.xml</code>, &hellip;), and <b>custom</b> sitemaps use a hyphenated <code>sitemap-&hellip;-custom.xml</code> form. Match the family, e.g. <code>^/sitemap_index\.xml$</code>, <code>^/sitemap_\d+.*\.xml$</code>, or <code>^/sitemap-[\w]*-custom\.xml$</code>.</li>
+      <li><b>Where to route.</b> Do the sitemap-vs-everything-else split at the edge &ndash; an eCDN rule or reverse proxy in front of MRT. Not inside PWA Kit's <code>app/ssr.js</code>: that already runs on MRT behind the proxy, so the request has left the edge. Steer sitemap paths to ecom and leave <code>Host</code> alone.</li>
+      <li><b>Alias requirement.</b> In Business Manager &rarr; Merchant Tools &rarr; SEO &rarr; Aliases, add an alias matching the storefront domain so generated sitemap URLs use the right host.</li>
+      <li><b>Replace, don't add.</b> <code>plugin_sitemap</code> already ships the SFRA <code>SiteMap.js</code>; replace that file rather than layering another cartridge that still pulls in <code>server</code>.</li>
+      <li><b>The BM download isn't the controller path.</b> The Business Manager sitemap download can succeed while the public URL 500s &ndash; they exercise different code, so a working download doesn't mean the controller works.</li>
+      <li><b>Base cartridge without controllers is normal for headless.</b> <code>app_storefront_base</code> may sit in the cartridge path for non-controller resources; it just won't drag in <code>server</code> unless the SFRA <code>modules/</code> upload is also present.</li>
+    </ul>
+
+    <div class="foot">Sources: <code>SiteMap.js</code> controller and <code>SendGoogleSiteMap</code> pipelet (<code>plugin_sitemap</code> cartridge, <code>server.get('Google')</code> in the stock SFRA build); the standalone controller pattern (<code>exports.&lt;Name&gt;</code> + <code>endpoint.public = true</code>) needs no <code>server</code> module. Reverse-proxy / <code>Host</code>-preservation technique described in 'Mastering Sitemaps in SFCC' (<a href="https://rhino-inquisitor.com/mastering-sitemaps-in-sfcc">rhino-inquisitor.com</a>). Headless <code>Module "server" not found</code> failure mode and the dependency-free fix diagnosed from a B2C Commerce support case.</div>
+  </div>
+</div>
+</body>
+</html>
